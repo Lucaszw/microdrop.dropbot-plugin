@@ -49,6 +49,7 @@ from zmq_plugin.schema import decode_content_data
 import dropbot as db
 import dropbot.hardware_test
 import dropbot.self_test
+from flatland_helpers import flatlandToDict
 import gobject
 import gtk
 # XXX Use `json_tricks` rather than standard `json` to support serializing
@@ -59,6 +60,7 @@ import json_tricks
 import microdrop_utility as utility
 import numpy as np
 import pandas as pd
+import paho_mqtt_helpers as pmh
 import path_helpers as ph
 import tables
 import zmq
@@ -306,7 +308,8 @@ def require_test_board(func):
     return _wrapped
 
 
-class DropBotPlugin(Plugin, StepOptionsController, AppDataController):
+class DropBotPlugin(Plugin, StepOptionsController, AppDataController,
+                    pmh.BaseMqttReactor):
     """
     This class is automatically registered with the PluginManager.
     """
@@ -337,6 +340,56 @@ class DropBotPlugin(Plugin, StepOptionsController, AppDataController):
         self.menu = None
         self.menu_item_root = None
         self.diagnostics_results_dir = '.dropbot-diagnostics'
+        self.channels = None
+        self.electrodes = None
+        pmh.BaseMqttReactor.__init__(self)
+        self.start()
+
+    def start(self):
+        # Connect to MQTT broker.
+        self._connect()
+        self.mqtt_client.loop_start()
+
+    def on_channels_set(self, payload, args):
+        self.channels = payload
+
+    def on_electrodes_set(self, payload, args):
+        self.electrodes = payload
+        if (self.channels is None):
+            return
+        channel_states = pd.Series(name="channels")
+        for electode_id, state in self.electrodes.iteritems():
+            c = self.channels[self.channels['electrode_id'] == electode_id]
+            # XXX: Assuming electrodes only have one channel:
+            channel = c['channel'].values[0]
+            channel_states[str(channel)] = state
+        self.update_channel_states(channel_states)
+
+    def on_plugin_changed(self, payload, args):
+        self.set_voltage(payload['default_voltage'])
+        self.set_frequency(payload['default_frequency'])
+
+    def on_running_state_requested(self, payload, args):
+        self.trigger("send-running-state", self.plugin_path)
+
+    def listen(self):
+        # TODO: Move running state messages to base class:
+        self.bindSignalMsg("running", "send-running-state")
+        self.bindStateMsg("stats", "set-stats")
+        self.bindStateMsg("voltage", "set-voltage")
+        self.bindStateMsg("frequency", "set_frequency")
+        self.onStateMsg("electrodes-model", "channels", self.on_channels_set)
+        self.onStateMsg("electrodes-model",
+                        "electrodes", self.on_electrodes_set)
+        self.onSignalMsg("web-server", "running-state-requested",
+                         self.on_running_state_requested)
+        self.onSignalMsg("{pluginName}", self.url_safe_plugin_name +
+                         "-changed", self.on_plugin_changed)
+        # Update schema:
+        self.bindPutMsg("schema-model", "schema", "put-schema")
+        form = flatlandToDict(self.AppFields)
+        self.trigger("put-schema",
+                     {'schema': form, 'pluginName': self.url_safe_plugin_name})
 
     @property
     def status(self):
@@ -738,6 +791,7 @@ class DropBotPlugin(Plugin, StepOptionsController, AppDataController):
                                       (properties['display_name'], version,
                                        properties['software_version'], id,
                                        str(uuid)[:8], n_channels))
+            self.trigger("set-stats", self.connection_status)
 
         # Schedule update of control board status label in main GTK thread.
         gobject.idle_add(app.main_window_controller.label_control_board_status
@@ -857,6 +911,7 @@ class DropBotPlugin(Plugin, StepOptionsController, AppDataController):
         """
         logger.info("[DropBotPlugin].set_voltage(%.1f)" % voltage)
         self.control_board.voltage = voltage
+        self.trigger("set-voltage", self.control_board.voltage)
 
     def set_frequency(self, frequency):
         """
@@ -868,6 +923,7 @@ class DropBotPlugin(Plugin, StepOptionsController, AppDataController):
         logger.info("[DropBotPlugin].set_frequency(%.1f)" % frequency)
         self.control_board.frequency = frequency
         self.current_frequency = frequency
+        self.trigger("set_frequency", self.control_board.frequency)
 
     def on_step_options_changed(self, plugin, step_number):
         logger.info('[DropBotPlugin] on_step_options_changed(): %s step #%d',
@@ -971,3 +1027,5 @@ class DropBotPlugin(Plugin, StepOptionsController, AppDataController):
 
 
 PluginGlobals.pop_env()
+
+# DmfPlugin()

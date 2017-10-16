@@ -352,6 +352,7 @@ class DropBotPlugin(Plugin, StepOptionsController, AppDataController,
 
     def on_channels_set(self, payload, args):
         self.channels = payload
+        self.read_capacitance()
 
     def on_electrodes_set(self, payload, args):
         self.electrodes = payload
@@ -363,7 +364,9 @@ class DropBotPlugin(Plugin, StepOptionsController, AppDataController,
             # XXX: Assuming electrodes only have one channel:
             channel = c['channel'].values[0]
             channel_states[str(channel)] = state
+
         self.update_channel_states(channel_states)
+        self.read_capacitance()
 
     def on_plugin_changed(self, payload, args):
         self.set_voltage(payload['default_voltage'])
@@ -377,7 +380,8 @@ class DropBotPlugin(Plugin, StepOptionsController, AppDataController,
         self.bindSignalMsg("running", "send-running-state")
         self.bindStateMsg("stats", "set-stats")
         self.bindStateMsg("voltage", "set-voltage")
-        self.bindStateMsg("frequency", "set_frequency")
+        self.bindStateMsg("frequency", "set-frequency")
+        self.bindStateMsg("capacitance", "set-capacitance")
         self.onStateMsg("electrodes-model", "channels", self.on_channels_set)
         self.onStateMsg("electrodes-model",
                         "electrodes", self.on_electrodes_set)
@@ -390,6 +394,16 @@ class DropBotPlugin(Plugin, StepOptionsController, AppDataController,
         form = flatlandToDict(self.AppFields)
         self.trigger("put-schema",
                      {'schema': form, 'pluginName': self.url_safe_plugin_name})
+
+    def read_capacitance(self):
+        capacitance = None
+        if self.control_board:
+            capacitance = self.control_board.measure_capacitance()
+        print("<DropbotPlugin#read_capacitance> Capacitance: %s" % capacitance)
+
+        self.trigger("set-capacitance",
+                     {'capacitance': capacitance,
+                      'pluginName': self.url_safe_plugin_name})
 
     @property
     def status(self):
@@ -923,7 +937,7 @@ class DropBotPlugin(Plugin, StepOptionsController, AppDataController,
         logger.info("[DropBotPlugin].set_frequency(%.1f)" % frequency)
         self.control_board.frequency = frequency
         self.current_frequency = frequency
-        self.trigger("set_frequency", self.control_board.frequency)
+        self.trigger("set-frequency", self.control_board.frequency)
 
     def on_step_options_changed(self, plugin, step_number):
         logger.info('[DropBotPlugin] on_step_options_changed(): %s step #%d',
